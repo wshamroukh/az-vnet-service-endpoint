@@ -41,7 +41,7 @@ runcmd:
   - echo "net.ipv4.conf.all.forwarding=1" | sudo tee -a /etc/sysctl.conf
   - echo "net.ipv4.conf.default.forwarding=1" | sudo tee -a /etc/sysctl.conf
   - sudo sysctl -p
-  - mkdir -p ~/azcopy && cd ~/azcopy && wget -O azcopy_v10.tar.gz https://aka.ms/downloadazcopy-v10-linux && tar -xf azcopy_v10.tar.gz --strip-components=1
+  - mkdir -p /tmp/azcopy && cd /tmp/azcopy && wget -O azcopy_v10.tar.gz https://aka.ms/downloadazcopy-v10-linux && tar -xf azcopy_v10.tar.gz --strip-components=1
 EOF
 
 function wait_until_finished {
@@ -390,6 +390,7 @@ az storage container create -g $rg -n test --account-name $stor_name -o none
 blobep=$(az storage account show -g $rg -n $stor_name --query primaryEndpoints.blob -o tsv) && echo $blobep
 blobdns=${blobep#*://}
 blobdns=${blobdns%%/*}
+blob_ip=$(nslookup $blobdns | awk '/^Address: / { print $2 }') && echo Blob IP address: $blob_ip
 # create a sas token
 echo -e "\e[1;36mCreating a SAS token for the test container in storage account ($stor_name)...\e[0m"
 end=`date -u -d "600 minutes" '+%Y-%m-%dT%H:%MZ'` && echo $end
@@ -408,7 +409,7 @@ az storage blob upload --account-name $stor_name --container-name test --account
 # try to download the file from onprem using this command
 fileurl=${blobep}test/test.txt && echo $file
 echo you can now run the following command on gw and onprem vm: azcopy cp \"$fileurl?${sas}\" \"test.txt\"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "~/azcopy/azcopy cp \"$file?${sas}\" \"test.txt\""
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "/tmp/azcopy/azcopy cp \"$file?${sas}\" \"test.txt\""
 
 # enable service endpoint on storage account
 az storage account network-rule list -g $rg --account-name $stor_name --query virtualNetworkRules
@@ -433,16 +434,16 @@ echo -e "\e[1;33mOn hub1 vm, you should still be able to run the azcopy command 
 echo -e "\e[1;33mYou should get on onprem1-gw and onprem1 vms the following error: RESPONSE 403: 403 This request is not authorized to perform this operation.\e[0m"
 
 # sending the traffic to the storage account through the onprem1-gw
-echo -e "\e[1;36mUpdating the $onprem1_vnet_name route table to send the traffic to the storage account IP address ($blobdns) through onprem1-gw...\e[0m"
-az network route-table route create --address-prefix $blobdns/32 -n to-storage -g $rg --next-hop-type VirtualAppliance --route-table-name $onprem1_vnet_name --next-hop-ip-address $onprem1_gw_private_ip -o none
+echo -e "\e[1;36mUpdating the $onprem1_vnet_name route table to send the traffic to the storage account IP address ($blob_ip) through onprem1-gw...\e[0m"
+az network route-table route create --address-prefix $blob_ip/32 -n to-storage -g $rg --next-hop-type VirtualAppliance --route-table-name $onprem1_vnet_name --next-hop-ip-address $onprem1_gw_private_ip -o none
 
 # add a static route to the storage account through the ipsec xfrm interface
 echo -e "\e[1;36mAdding a static route on onprem1-gw route the traffic to the storage account through ipsec0 xfrm interface (through S2S tunnel)...\e[0m"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo ip route add $blobdns/32 dev ipsec0"
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo ip route add $blob_ip/32 dev ipsec0"
 echo -e "\e[1;33mNow you should be able to run the azcopy command normally on onprem1-gw and onprem1 vms...\e[0m"
 
 # For P2S VPN connections, you can use this command to advertise the route to the storage account through VPN tunnel
-# az network vnet-gateway update -g $rg -n $hub1_vnet_name-gw --custom-routes "$blobdns/32"
+# az network vnet-gateway update -g $rg -n $hub1_vnet_name-gw --custom-routes "$blob_ip/32"
 
 #cleanup
 # az group delete -g $rg -y --no-wait
