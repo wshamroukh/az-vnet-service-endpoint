@@ -13,6 +13,31 @@
   
 # Note
 
-If P2S VPN is enabled on the gateway and you wanted the P2S VPN clients traffic to the storage account to be sent through the P2S VPN tunnel (instead of going to the internet which is blocked once you enable service endpoint), you could use the command below - in the `custom-routes` parameter add the IP address of the blob:
+If P2S VPN is enabled on the gateway and you wanted the P2S VPN clients traffic to the storage account to be sent through the P2S VPN tunnel (instead of going to the internet which is blocked once you enable service endpoint), you could use the command below - in the `custom-routes` parameter add the IP address of the blob endpoint:
 
 `az network vnet-gateway update -g $rg -n $hub1_vnet_name-gw --custom-routes "$blobdns/32"`
+
+In Azure Powershell us this command - the parameter `CustomRoute` is where you add the ip address of the blob endpoint
+```
+Set-AzVirtualNetworkGateway
+   -VirtualNetworkGateway <PSVirtualNetworkGateway>
+   [-GatewaySku <String>]
+   [-GatewayDefaultSite <PSLocalNetworkGateway>]
+   [-VpnClientAddressPool <String[]>]
+   [-VpnClientProtocol <String[]>]
+   [-VpnClientRootCertificates <PSVpnClientRootCertificate[]>]
+   [-VpnClientRevokedCertificates <PSVpnClientRevokedCertificate[]>]
+   [-VpnClientIpsecPolicy <PSIpsecPolicy[]>]
+   [-Asn <UInt32>]
+   [-PeerWeight <Int32>]
+   [-EnableActiveActiveFeature]
+   [-DisableActiveActiveFeature]
+   [-RemoveAadAuthentication]
+   [-CustomRoute <String[]>]
+   [-AsJob]
+   [-DefaultProfile <IAzureContextContainer>]
+   [-WhatIf]
+   [-Confirm]
+   [<CommonParameters>]
+
+```
