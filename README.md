@@ -13,6 +13,6 @@
   
 # Note
 
-If P2S VPN is enabled on the gateway and you wanted the P2S VPN clients traffic to the storage account to be sent through the P2S VPN tunnel (instead of going to the internet which is blocked once you enable service endpoint), you could use the command below - in the `custom-route` parameter add the IP address of the blob:
+If P2S VPN is enabled on the gateway and you wanted the P2S VPN clients traffic to the storage account to be sent through the P2S VPN tunnel (instead of going to the internet which is blocked once you enable service endpoint), you could use the command below - in the `custom-routes` parameter add the IP address of the blob:
 
 `az network vnet-gateway update -g $rg -n $hub1_vnet_name-gw --custom-routes "$blobdns/32"`
