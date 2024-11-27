@@ -1,5 +1,7 @@
 # How to route the traffic through S2S VPN connection to a VNet Service Endpoint enabled Azure service (like storage account)
 
+![service-endpoint.png](/service-endpoint.png)
+
 * This script creates a S2S VPN connection between Azure VPN Gateway and onprem VPN gateway.
 * Then a storage account is created, and then VNet Service Endpoint is enabled on the storage account to allow only a specific subnet (vm) in a virtual network (hub1).
 * Once the VNet Service Endpoint is enabled on the storage account, the public traffic to the storage account is disabled including the on-premises network and only specific subnets are allowed to access the storage account.
