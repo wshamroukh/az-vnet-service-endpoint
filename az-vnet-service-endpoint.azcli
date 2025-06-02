@@ -16,39 +16,30 @@ onprem1_gw_subnet_address=172.21.0.0/24
 onprem1_gw_asn=65521
 onprem1_vm_subnet_name=vm
 onprem1_vm_subnet_address=172.21.1.0/24
+onprem1_gw_vti0=172.21.0.250
+onprem1_gw_vti1=172.21.0.251
 
-advertised_address1=1.1.1.1/32
 admin_username=$(whoami)
 myip=$(curl -s4 https://ifconfig.co/)
 psk=secret12345
 vm_size=Standard_B2ats_v2
 
-cloudinit_file=~/cloudinit.txt
+cloudinit_file=cloudinit.txt
 cat <<EOF > $cloudinit_file
 #cloud-config
 runcmd:
   - curl -s https://deb.frrouting.org/frr/keys.gpg | sudo tee /usr/share/keyrings/frrouting.gpg > /dev/null
   - echo deb [signed-by=/usr/share/keyrings/frrouting.gpg] https://deb.frrouting.org/frr \$(lsb_release -s -c) frr-stable | sudo tee -a /etc/apt/sources.list.d/frr.list
   - sudo apt update && sudo apt install -y frr frr-pythontools
-  - sudo apt install -y strongswan strongswan-swanctl inetutils-traceroute net-tools
+  - sudo apt install -y strongswan inetutils-traceroute net-tools
   - sudo sed -i "/bgpd=no/ s//bgpd=yes/" /etc/frr/daemons
   - sudo service frr restart
-  - touch /etc/strongswan.d/ipsec-xfrm.sh
-  - chmod +x /etc/strongswan.d/ipsec-xfrm.sh
+  - sudo systemctl enable ipsec
   - cp /etc/ipsec.conf /etc/ipsec.conf.bak
   - cp /etc/ipsec.secrets /etc/ipsec.secrets.bak
   - echo "net.ipv4.conf.all.forwarding=1" | sudo tee -a /etc/sysctl.conf
   - echo "net.ipv4.conf.default.forwarding=1" | sudo tee -a /etc/sysctl.conf
   - sudo sysctl -p
-  - mkdir -p /tmp/azcopy && cd /tmp/azcopy && wget -O azcopy_v10.tar.gz https://aka.ms/downloadazcopy-v10-linux && tar -xf azcopy_v10.tar.gz --strip-components=1 && cp /tmp/azcopy/azcopy /usr/bin
-EOF
-
-client_cloudinit_file=~/client_cloudinit.txt
-cat <<EOF > $client_cloudinit_file
-#cloud-config
-runcmd:
-  - sudo apt update
-  - mkdir -p /tmp/azcopy && cd /tmp/azcopy && wget -O azcopy_v10.tar.gz https://aka.ms/downloadazcopy-v10-linux && tar -xf azcopy_v10.tar.gz --strip-components=1 && cp /tmp/azcopy/azcopy /usr/bin
 EOF
 
 function wait_until_finished {
@@ -57,11 +48,11 @@ function wait_until_finished {
      resource_name=$(echo $resource_id | cut -d/ -f 9)
      echo -e "\e[1;35mWaiting for resource $resource_name to finish provisioning...\e[0m"
      start_time=`date +%s`
-     state=$(az resource show --id $resource_id --query properties.provisioningState -o tsv)
+     state=$(az resource show --id $resource_id --query properties.provisioningState -o tsv | tr -d '\r')
      until [[ "$state" == "Succeeded" ]] || [[ "$state" == "Failed" ]] || [[ -z "$state" ]]
      do
         sleep $wait_interval
-        state=$(az resource show --id $resource_id --query properties.provisioningState -o tsv)
+        state=$(az resource show --id $resource_id --query properties.provisioningState -o tsv | tr -d '\r')
      done
      if [[ -z "$state" ]]
      then
@@ -109,8 +100,8 @@ az network public-ip create -g $rg -n $onprem1_vnet_name-gw -l $location1 --allo
 az network nic create -g $rg -n $onprem1_vnet_name-gw -l $location1 --vnet-name $onprem1_vnet_name --subnet $onprem1_gw_subnet_name --ip-forwarding true --public-ip-address $onprem1_vnet_name-gw -o none
 az vm create -g $rg -n $onprem1_vnet_name-gw -l $location1 --image Ubuntu2404 --nics $onprem1_vnet_name-gw --os-disk-name $onprem1_vnet_name-gw --size $vm_size --admin-username $admin_username --generate-ssh-keys --custom-data $cloudinit_file --no-wait
 # onprem1 gw details
-onprem1_gw_pubip=$(az network public-ip show -g $rg -n $onprem1_vnet_name-gw --query ipAddress -o tsv) && echo $onprem1_vnet_name-gw public ip: $onprem1_gw_pubip
-onprem1_gw_private_ip=$(az network nic show -g $rg -n $onprem1_vnet_name-gw --query ipConfigurations[].privateIPAddress -o tsv)  && echo $onprem1_vnet_name-gw private ip: $onprem1_gw_private_ip
+onprem1_gw_pubip=$(az network public-ip show -g $rg -n $onprem1_vnet_name-gw --query ipAddress -o tsv | tr -d '\r') && echo $onprem1_vnet_name-gw public ip: $onprem1_gw_pubip
+onprem1_gw_private_ip=$(az network nic show -g $rg -n $onprem1_vnet_name-gw --query ipConfigurations[].privateIPAddress -o tsv | tr -d '\r')  && echo $onprem1_vnet_name-gw private ip: $onprem1_gw_private_ip
 onprem1_gw_nic_default_gw=$(first_ip $onprem1_gw_subnet_address) && echo $onprem1_vnet_name-gw default gateway ip: $onprem1_gw_nic_default_gw
 
 # onprem1 local network gateway
@@ -121,13 +112,13 @@ az network local-gateway create -g $rg -n $onprem1_vnet_name-gw -l $location1 --
 echo -e "\e[1;36mDeploying $onprem1_vnet_name VM...\e[0m"
 az network nic create -g $rg -n $onprem1_vnet_name -l $location1 --vnet-name $onprem1_vnet_name --subnet $onprem1_vm_subnet_name -o none
 az vm create -g $rg -n $onprem1_vnet_name -l $location1 --image Ubuntu2404 --nics $onprem1_vnet_name --os-disk-name $onprem1_vnet_name --size $vm_size --admin-username $admin_username --generate-ssh-keys --custom-data $client_cloudinit_file --no-wait
-onprem1_vm_ip=$(az network nic show -g $rg -n $onprem1_vnet_name --query ipConfigurations[0].privateIPAddress -o tsv) && echo $onprem1_vnet_name vm private ip: $onprem1_vm_ip
+onprem1_vm_ip=$(az network nic show -g $rg -n $onprem1_vnet_name --query ipConfigurations[0].privateIPAddress -o tsv | tr -d '\r') && echo $onprem1_vnet_name vm private ip: $onprem1_vm_ip
 
 # hub1 vm
 echo -e "\e[1;36mDeploying $hub1_vnet_name VM...\e[0m"
 az network nic create -g $rg -n $hub1_vnet_name -l $location1 --vnet-name $hub1_vnet_name --subnet $hub1_vm_subnet_name -o none
 az vm create -g $rg -n $hub1_vnet_name -l $location1 --image Ubuntu2404 --nics $hub1_vnet_name --os-disk-name $hub1_vnet_name --size $vm_size --admin-username $admin_username --generate-ssh-keys --custom-data $client_cloudinit_file --no-wait
-hub1_vm_ip=$(az network nic show -g $rg -n $hub1_vnet_name --query ipConfigurations[0].privateIPAddress -o tsv) && echo $hub1_vnet_name vm private ip: $hub1_vm_ip
+hub1_vm_ip=$(az network nic show -g $rg -n $hub1_vnet_name --query ipConfigurations[0].privateIPAddress -o tsv | tr -d '\r') && echo $hub1_vnet_name vm private ip: $hub1_vm_ip
 
 # onprem1 route table
 echo -e "\e[1;36mDeploying $onprem1_vnet_name route table and attaching it to $onprem1_vm_subnet_name subnet...\e[0m"
@@ -155,17 +146,34 @@ az network nsg rule create -g $rg -n AllowICMPout --nsg-name $onprem1_vnet_name-
 az network nsg rule create -g $rg -n AllowHTTPSout --nsg-name $onprem1_vnet_name-gw --priority 1020 --access Allow --description AllowHTTPS --protocol Tcp --direction Outbound --destination-address-prefixes '*' --destination-port-ranges 443 --source-address-prefixes '*' --source-port-ranges '*' -o none
 az network vnet subnet update -g $rg -n $onprem1_gw_subnet_name --vnet-name $onprem1_vnet_name --nsg $onprem1_vnet_name-gw -o none
 
+# create storage account for testing
+stor_name=wadstor$RANDOM
+echo -e "\e[1;36mCreating a storage account ($stor_name)...\e[0m"
+az storage account create -g $rg -n $stor_name --access-tier Hot --sku Standard_LRS -o none
+storkey=$(az storage account keys list -g $rg -n $stor_name --query [0].value -o tsv | tr -d '\r')
+# create a storage container
+echo -e "\e[1;36mCreating a test container in storage account ($stor_name)...\e[0m"
+az storage container create -g $rg -n test --account-name $stor_name -o none
+blobep=$(az storage account show -g $rg -n $stor_name --query primaryEndpoints.blob -o tsv | tr -d '\r') && echo $blobep
+blobdns=${blobep#*://}
+blobdns=${blobdns%%/*} && echo Blob FQDN: $blobdns
+blob_ip=$(nslookup $blobdns | awk '/^Address: / { print $2 }') && echo Blob IP address: $blob_ip
+# create a sas token
+echo -e "\e[1;36mCreating a SAS token for the test container in storage account ($stor_name)...\e[0m"
+end=`date -u -d "600 minutes" '+%Y-%m-%dT%H:%MZ'` && echo $end
+sas=$(az storage container generate-sas --account-name $stor_name -n test --https-only --permission dlrw --expiry $end -o tsv | tr -d '\r') && echo $sas
+
 # waiting on hub1 vpn gw to finish deployment
-hub1_gw_id=$(az network vnet-gateway show -g $rg -n $hub1_vnet_name-gw --query id -o tsv)
+hub1_gw_id=$(az network vnet-gateway show -g $rg -n $hub1_vnet_name-gw --query id -o tsv | tr -d '\r')
 wait_until_finished $hub1_gw_id
 
 # Getting hub1 VPN GW details
 echo -e "\e[1;36mGetting $hub1_gw_name VPN Gateway details...\e[0m"
-hub1_gw_pubip0=$(az network vnet-gateway show -n $hub1_vnet_name-gw -g $rg --query 'bgpSettings.bgpPeeringAddresses[0].tunnelIpAddresses[0]' -o tsv) && echo $hub1_vnet_name-gw: $hub1_gw_pubip0
-hub1_gw_pubip1=$(az network vnet-gateway show -n $hub1_vnet_name-gw -g $rg --query 'bgpSettings.bgpPeeringAddresses[1].tunnelIpAddresses[0]' -o tsv) && echo $hub1_vnet_name-gw: $hub1_gw_pubip1
-hub1_gw_bgp_ip0=$(az network vnet-gateway show -n $hub1_vnet_name-gw -g $rg --query 'bgpSettings.bgpPeeringAddresses[0].defaultBgpIpAddresses[0]' -o tsv) && echo $hub1_vnet_name-gw: $hub1_gw_bgp_ip0
-hub1_gw_bgp_ip1=$(az network vnet-gateway show -n $hub1_vnet_name-gw -g $rg --query 'bgpSettings.bgpPeeringAddresses[1].defaultBgpIpAddresses[0]' -o tsv) && echo $hub1_vnet_name-gw: $hub1_gw_bgp_ip1
-hub1_gw_asn=$(az network vnet-gateway show -n $hub1_vnet_name-gw -g $rg --query bgpSettings.asn -o tsv) && echo $hub1_vnet_name-gw: $hub1_gw_asn
+hub1_gw_pubip0=$(az network vnet-gateway show -n $hub1_vnet_name-gw -g $rg --query 'bgpSettings.bgpPeeringAddresses[0].tunnelIpAddresses[0]' -o tsv | tr -d '\r') && echo $hub1_vnet_name-gw: $hub1_gw_pubip0
+hub1_gw_pubip1=$(az network vnet-gateway show -n $hub1_vnet_name-gw -g $rg --query 'bgpSettings.bgpPeeringAddresses[1].tunnelIpAddresses[0]' -o tsv | tr -d '\r') && echo $hub1_vnet_name-gw: $hub1_gw_pubip1
+hub1_gw_bgp_ip0=$(az network vnet-gateway show -n $hub1_vnet_name-gw -g $rg --query 'bgpSettings.bgpPeeringAddresses[0].defaultBgpIpAddresses[0]' -o tsv | tr -d '\r') && echo $hub1_vnet_name-gw: $hub1_gw_bgp_ip0
+hub1_gw_bgp_ip1=$(az network vnet-gateway show -n $hub1_vnet_name-gw -g $rg --query 'bgpSettings.bgpPeeringAddresses[1].defaultBgpIpAddresses[0]' -o tsv | tr -d '\r') && echo $hub1_vnet_name-gw: $hub1_gw_bgp_ip1
+hub1_gw_asn=$(az network vnet-gateway show -n $hub1_vnet_name-gw -g $rg --query bgpSettings.asn -o tsv | tr -d '\r') && echo $hub1_vnet_name-gw: $hub1_gw_asn
 
 # creating VPN connection between hub1 vpn gw and onprem1 gw
 echo -e "\e[1;36mCreating S2S VPN Connection between Azure VPN Gateway $hub1_vnet_name and $onprem1_vnet_name gateway...\e[0m"
@@ -175,167 +183,154 @@ az network vpn-connection create -g $rg -n $hub1_vnet_name-gw-to-$onprem1_vnet_n
 # onprem1 VPN Config  #
 #######################
 echo -e "\e[1;36mCreating S2S/BGP VPN Config files for $onprem1_vnet_name-gw gateway VM...\e[0m"
-# StrongSwan config file
-swanctl_file=~/swanctl.conf
-cat <<EOF > $swanctl_file
-connections {
-   $hub1_vnet_name-gw0 {
-        local_addrs  = $onprem1_gw_private_ip
-        remote_addrs = $hub1_gw_pubip0
-        version = 2
-        proposals = aes256-sha1-modp1024,aes192-sha256-modp3072,default
-        keyingtries = 0
-        encap = yes
-        local {
-            auth = psk
-            id = $onprem1_gw_pubip
-        }
-        remote {
-            auth = psk
-            id = $hub1_gw_pubip0
-            revocation = relaxed
-        }
-        children {
-            $hub1_vnet_name-gw0 {
-                local_ts = 0.0.0.0/0
-                remote_ts = 0.0.0.0/0
-                esp_proposals = aes256gcm16
-                dpd_action = restart
-                start_action = trap
-                rekey_time = 3600
-                updown = /etc/strongswan.d/ipsec-xfrm.sh
-            }
-        }
-        if_id_in = 41
-        if_id_out = 41
-   }
-   $hub1_vnet_name-gw1 {
-        local_addrs  = $onprem1_gw_private_ip
-        remote_addrs = $hub1_gw_pubip1
-        version = 2
-        proposals = aes256-sha1-modp1024,aes192-sha256-modp3072,default
-        keyingtries = 0
-        encap = yes
-        local {
-            auth = psk
-            id = $onprem1_gw_pubip
-        }
-        remote {
-            auth = psk
-            id = $hub1_gw_pubip1
-            revocation = relaxed
-        }
-        children {
-            $hub1_vnet_name-gw1 {
-                local_ts = 0.0.0.0/0
-                remote_ts = 0.0.0.0/0
-                esp_proposals = aes256gcm16
-                dpd_action = restart
-                start_action = trap
-                rekey_time = 3600
-                updown = /etc/strongswan.d/ipsec-xfrm.sh
-            }
-        }
-        if_id_in = 42
-        if_id_out = 42
-   }
-}
-secrets {
-   # PSK secret
-   ike-1 {
-        id-0 = $hub1_gw_pubip0
-        id-1 = $hub1_gw_pubip1
-        secret = "$psk" 
-   }
-}
+# ipsec.secrets
+psk_file=~/ipsec.secrets
+cat <<EOF > $psk_file
+$onprem1_gw_pubip $hub1_gw_pubip0 : PSK $psk
+$onprem1_gw_pubip $hub1_gw_pubip1 : PSK $psk
 EOF
 
-# ipsec-xfrm.sh
-ipsec_xfrm_file=~/ipsec-xfrm.sh
-tee $ipsec_xfrm_file > /dev/null <<'EOT'
+# ipsec.conf
+ipsec_file=~/ipsec.conf
+cat <<EOF > $ipsec_file
+conn %default
+         # Authentication Method : Pre-Shared Key
+         leftauth=psk
+         rightauth=psk
+         ike=aes256-sha1-modp1024
+         ikelifetime=28800s
+         # Phase 1 Negotiation Mode : main
+         aggressive=no
+         esp=aes256-sha1
+         lifetime=3600s
+         keylife=3600s
+         type=tunnel
+         dpddelay=10s
+         dpdtimeout=30s
+         keyexchange=ikev2
+         rekey=yes
+         reauth=no
+         dpdaction=restart
+         closeaction=restart
+         leftsubnet=0.0.0.0/0,::/0
+         rightsubnet=0.0.0.0/0,::/0
+         leftupdown=/etc/strongswan.d/ipsec-vti.sh
+         installpolicy=yes
+         compress=no
+         mobike=no
+conn $hub1_vnet_name-gw0
+         # OnPrem Gateway Private IP Address :
+         left=$onprem1_gw_private_ip
+         # OnPrem Gateway Public IP Address :
+         leftid=$onprem1_gw_pubip
+         # Azure VPN Gateway Public IP address :
+         right=$hub1_gw_pubip0
+         rightid=$hub1_gw_pubip0
+         auto=start
+         # unique number per IPSEC Tunnel eg. 100, 101 etc
+         mark=101
+conn $hub1_vnet_name-gw1
+         # OnPrem Gateway Private IP Address :
+         left=$onprem1_gw_private_ip
+         # OnPrem Gateway Public IP Address :
+         leftid=$onprem1_gw_pubip
+         # Azure VPN Gateway Public IP address :
+         right=$hub1_gw_pubip1
+         rightid=$hub1_gw_pubip1
+         auto=start
+         # unique number per IPSEC Tunnel eg. 100, 101 etc
+         mark=102
+EOF
+
+# ipsec-vti.sh
+ipsec_vti_file=~/ipsec-vti.sh
+tee $ipsec_vti_file > /dev/null <<'EOT'
 #!/bin/bash
 
-echo "$0 $* --- $PLUTO_VERB - $PLUTO_CONNECTION"
+#
+# /etc/strongswan.d/ipsec-vti.sh
+#
 
-if [ "$PLUTO_VERB" == "up-client" ]
-then
-    if [ "$PLUTO_CONNECTION" == "$hub1_vnet_name-gw0" ]
-    then
-        sudo ip link add ipsec0 type xfrm dev eth0 if_id 41
-        sudo ip link set ipsec0 up
-        sudo ip route add $hub1_gw_bgp_ip0/32 dev ipsec0
-        sudo ip route add $hub1_gw_pubip0/32 via $onprem1_gw_nic_default_gw
-        sudo ip route add $myip/32 via $onprem1_gw_nic_default_gw
-        sudo ip route add throw $hub1_gw_pubip0/32 table 220
-        sudo ip route add throw $myip/32 table 220
-        echo "`date` ${PLUTO_VERB} -- $hub1_vnet_name-gw0" >> /tmp/xfrmtrace.log
-    fi
+IP=$(which ip)
+IPTABLES=$(which iptables)
+PLUTO_MARK_OUT_ARR=(${PLUTO_MARK_OUT//// })
+PLUTO_MARK_IN_ARR=(${PLUTO_MARK_IN//// })
+case "$PLUTO_CONNECTION" in
+  $hub1_vnet_name-gw0)
+    VTI_INTERFACE=vti0
+    VTI_LOCALADDR=$onprem1_gw_vti0/32
+    VTI_REMOTEADDR=$hub1_gw_bgp_ip0/32
+    echo "`date` - ${PLUTO_VERB} - ${PLUTO_CONNECTION} - $VTI_INTERFACE" >> /tmp/vtitrace.log
+    ;;
+  $hub1_vnet_name-gw1)
+    VTI_INTERFACE=vti1
+    VTI_LOCALADDR=$onprem1_gw_vti1/32
+    VTI_REMOTEADDR=$hub1_gw_bgp_ip1/32
+    echo "`date` - ${PLUTO_VERB} - ${PLUTO_CONNECTION} - $VTI_INTERFACE" >> /tmp/vtitrace.log
+    ;;
+esac
+case "${PLUTO_VERB}" in
+    up-client)
+        $IP link add ${VTI_INTERFACE} type vti local ${PLUTO_ME} remote ${PLUTO_PEER} okey ${PLUTO_MARK_OUT_ARR[0]} ikey ${PLUTO_MARK_IN_ARR[0]}
+        sysctl -w net.ipv4.conf.${VTI_INTERFACE}.disable_policy=1
+        sysctl -w net.ipv4.conf.${VTI_INTERFACE}.rp_filter=2 || sysctl -w net.ipv4.conf.${VTI_INTERFACE}.rp_filter=0
+        $IP addr add ${VTI_LOCALADDR} remote ${VTI_REMOTEADDR} dev ${VTI_INTERFACE}
+        $IP link set ${VTI_INTERFACE} up mtu 1350
+        $IPTABLES -t mangle -I FORWARD -o ${VTI_INTERFACE} -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+        $IPTABLES -t mangle -I INPUT -p esp -s ${PLUTO_PEER} -d ${PLUTO_ME} -j MARK --set-xmark ${PLUTO_MARK_IN}
+        $IP route flush table 220
+        /etc/init.d/frr force-reload bgpd
+        ;;
+    down-client)
+        $IP link del ${VTI_INTERFACE}
+        $IPTABLES -t mangle -D FORWARD -o ${VTI_INTERFACE} -p tcp -m tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+        $IPTABLES -t mangle -D INPUT -p esp -s ${PLUTO_PEER} -d ${PLUTO_ME} -j MARK --set-xmark ${PLUTO_MARK_IN}
+        ;;
+esac
 
-    if [ "$PLUTO_CONNECTION" == "$hub1_vnet_name-gw1" ]
-    then
-        sudo ip link add ipsec1 type xfrm dev eth0 if_id 42
-        sudo ip link set ipsec1 up
-        sudo ip route add $hub1_gw_bgp_ip1/32 dev ipsec1
-        sudo ip route add $hub1_gw_pubip1/32 via $onprem1_gw_nic_default_gw
-        sudo ip route add $myip/32 via $onprem1_gw_nic_default_gw
-        sudo ip route add throw $hub1_gw_pubip1/32 table 220
-        sudo ip route add throw $myip/32 table 220
-        echo "`date` ${PLUTO_VERB} -- $hub1_vnet_name-gw1" >> /tmp/xfrmtrace.log
-    fi
-fi
-
-if [ "$PLUTO_VERB" == "down-client" ]
-then
-    if [ "$PLUTO_CONNECTION" == "$hub1_vnet_name-gw0" ]
-    then
-        sudo ip link set ipsec0 down
-        echo "`date` ${PLUTO_VERB} -- $hub1_vnet_name-gw0" >> /tmp/xfrmtrace.log
-    fi
-
-    if [ "$PLUTO_CONNECTION" == "$hub1_vnet_name-gw1" ]
-    then
-        sudo ip link set ipsec1 down
-        echo "`date` ${PLUTO_VERB} -- $hub1_vnet_name-gw1" >> /tmp/xfrmtrace.log
-    fi
-fi
+# Enable IPv4 forwarding
+sysctl -w net.ipv4.ip_forward=1
+sysctl -w net.ipv4.conf.eth0.disable_xfrm=1
+sysctl -w net.ipv4.conf.eth0.disable_policy=1
 EOT
 
-sed -i "/\$hub1_vnet_name-gw0/ s//$hub1_vnet_name-gw0/" $ipsec_xfrm_file
-sed -i "/\$hub1_vnet_name-gw1/ s//$hub1_vnet_name-gw1/" $ipsec_xfrm_file
-sed -i "/\$hub1_gw_bgp_ip0/ s//$hub1_gw_bgp_ip0/" $ipsec_xfrm_file
-sed -i "/\$hub1_gw_bgp_ip1/ s//$hub1_gw_bgp_ip1/" $ipsec_xfrm_file
-sed -i "/\$hub1_gw_pubip0/ s//$hub1_gw_pubip0/" $ipsec_xfrm_file
-sed -i "/\$hub1_gw_pubip1/ s//$hub1_gw_pubip1/" $ipsec_xfrm_file
-sed -i "/\$myip/ s//$myip/" $ipsec_xfrm_file
-sed -i "/\$onprem1_gw_nic_default_gw/ s//$onprem1_gw_nic_default_gw/" $ipsec_xfrm_file
+sed -i "/\$onprem1_gw_vti0/ s//$onprem1_gw_vti0/" $ipsec_vti_file
+sed -i "/\$onprem1_gw_vti1/ s//$onprem1_gw_vti1/" $ipsec_vti_file
+sed -i "/\$hub1_gw_bgp_ip0/ s//$hub1_gw_bgp_ip0/" $ipsec_vti_file
+sed -i "/\$hub1_gw_bgp_ip1/ s//$hub1_gw_bgp_ip1/" $ipsec_vti_file
+sed -i "/\$hub1_vnet_name-gw0/ s//$hub1_vnet_name-gw0/" $ipsec_vti_file
+sed -i "/\$hub1_vnet_name-gw1/ s//$hub1_vnet_name-gw1/" $ipsec_vti_file
 
 
 # frr.conf
 frr_conf_file=~/frr.conf
 cat <<EOF > $frr_conf_file
-frr version 10.2
+frr version 10.3
 frr defaults traditional
 hostname $onprem1_vnet_name-gw
 log syslog informational
 no ipv6 forwarding
 service integrated-vtysh-config
 !
-ip route $advertised_address1 $onprem1_gw_nic_default_gw
 ip route $onprem1_vnet_address $onprem1_gw_nic_default_gw
+ip route $hub1_gw_bgp_ip0/32 $onprem1_gw_nic_default_gw
+ip route $hub1_gw_bgp_ip1/32 $onprem1_gw_nic_default_gw
+ip route $blob_ip/32 $onprem1_gw_vti0
+ip route $blob_ip/32 $onprem1_gw_vti1
 !
 router bgp $onprem1_gw_asn
  bgp router-id $onprem1_gw_private_ip
  no bgp ebgp-requires-policy
  neighbor $hub1_gw_bgp_ip0 remote-as $hub1_gw_asn
- neighbor $hub1_gw_bgp_ip0 description $hub1_vnet_name-gw0
+ neighbor $hub1_gw_bgp_ip0 description $hub1_vnet_name-gw-0
  neighbor $hub1_gw_bgp_ip0 ebgp-multihop 2
  neighbor $hub1_gw_bgp_ip1 remote-as $hub1_gw_asn
- neighbor $hub1_gw_bgp_ip1 description $hub1_vnet_name-gw1
+ neighbor $hub1_gw_bgp_ip1 description $hub1_vnet_name-gw-1
  neighbor $hub1_gw_bgp_ip1 ebgp-multihop 2
  !
  address-family ipv4 unicast
-  network $advertised_address1
   network $onprem1_vnet_address
+  network $blob_ip/32
   neighbor $hub1_gw_bgp_ip0 soft-reconfiguration inbound
   neighbor $hub1_gw_bgp_ip1 soft-reconfiguration inbound
  exit-address-family
@@ -345,81 +340,51 @@ EOF
 
 ##### copy files to onprem gw
 echo -e "\e[1;36mCopying and applying S2S/BGP VPN Config files to $onprem1_vnet_name-gw gateway VM...\e[0m"
-scp -o StrictHostKeyChecking=no $swanctl_file $frr_conf_file $ipsec_xfrm_file $onprem1_gw_pubip:/home/$admin_username
-scp -o StrictHostKeyChecking=no ~/.ssh/* $onprem1_gw_pubip:/home/$admin_username/.ssh/
+scp -o StrictHostKeyChecking=no $psk_file $ipsec_file $ipsec_vti_file $frr_conf_file $onprem1_gw_pubip:/home/$admin_username
+scp -o StrictHostKeyChecking=no ~/.ssh/id_rsa $onprem1_gw_pubip:/home/$admin_username/.ssh/
+# This is needed for clients to connect to internet through onprem gw
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE"
 ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo mv /home/$admin_username/frr.conf /etc/frr/frr.conf"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo mv /home/$admin_username/swanctl.conf /etc/swanctl/"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo mv /home/$admin_username/ipsec-xfrm.sh /etc/strongswan.d/"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo chmod +x /etc/strongswan.d/ipsec-xfrm.sh"
-# clean up config files
-rm $swanctl_file $frr_conf_file $ipsec_xfrm_file
-
-echo -e "\e[1;36mStarting IPsec on $onprem1_vnet_name-gw gateway VM...\e[0m"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo systemctl restart ipsec"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo swanctl --load-all"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo swanctl --initiate --child $hub1_vnet_name-gw0"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo swanctl --initiate --child $hub1_vnet_name-gw1"
-
-echo -e "\e[1;36mRestarting frr bgp service on $onprem1_vnet_name-gw gateway vm...\e[0m"
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo mv /home/$admin_username/ipsec.* /etc/"
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo mv /home/$admin_username/ipsec-vti.sh /etc/strongswan.d/"
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo chmod +x /etc/strongswan.d/ipsec-vti.sh"
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo ipsec restart"
 ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo service frr restart"
+echo -e "\e[1;36mChecking the status of S2S VPN between $onprem1_vnet_name-gw and $hub1_vnet_name-gw VPN Gateways...\e[0m"
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo ipsec status"
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo ipsec statusall"
+
+# clean up config files
+rm $psk_file $ipsec_file $ipsec_vti_file $frr_conf_file
+# clear up the cloudinit file
+rm $cloudinit_file
+
 
 #############
 # Diagnosis #
 #############
-echo -e "\e[1;36mChecking the IPsec VPN tunnel on $onprem1_vnet_name-gw gateway vm...\e[0m"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo ipsec statusall"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "ip a"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "ip route"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo swanctl -l && sudo swanctl -L"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo ip xfrm state && sudo ip xfrm policy"
-
-
-echo -e "\e[1;36mTring to checking reachability from $onprem1_vnet_name-gw vm to the rest of network topology..\e[0m"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "ping -c 3 $hub1_gw_bgp_ip0"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "ping -c 3 $hub1_gw_bgp_ip1"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "ping -c 3 $hub1_vm_ip"
 
 echo -e "\e[1;36mChecking BGP routing on $onprem1_vnet_name-gw gateway vm...\e[0m"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo vtysh -c 'show bgp summary'"
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo vtysh -c 'show bgp summary' && sudo vtysh -c 'show bgp all' && sudo vtysh -c 'show ip route'"
 ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo vtysh -c 'show bgp all'"
 ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo vtysh -c 'show int brief'"
 ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo vtysh -c 'show ip route'"
+echo -e "\e[1;36mTring to checking reachability from $onprem1_vnet_name-gw vm to the rest of network topology..\e[0m"
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "ping -c 3 $hub1_vm_ip"
 
-
-# create storage account for testing
-stor_name=wadstor$RANDOM
-echo -e "\e[1;36mCreating a storage account ($stor_name)...\e[0m"
-az storage account create -g $rg -n $stor_name --access-tier Hot --sku Standard_LRS -o none
-storkey=$(az storage account keys list -g $rg -n $stor_name --query [0].value -o tsv)
-# create a storage container
-echo -e "\e[1;36mCreating a test container in storage account ($stor_name)...\e[0m"
-az storage container create -g $rg -n test --account-name $stor_name -o none
-blobep=$(az storage account show -g $rg -n $stor_name --query primaryEndpoints.blob -o tsv) && echo $blobep
-blobdns=${blobep#*://}
-blobdns=${blobdns%%/*}
-blob_ip=$(nslookup $blobdns | awk '/^Address: / { print $2 }') && echo Blob IP address: $blob_ip
-# create a sas token
-echo -e "\e[1;36mCreating a SAS token for the test container in storage account ($stor_name)...\e[0m"
-end=`date -u -d "600 minutes" '+%Y-%m-%dT%H:%MZ'` && echo $end
-sas=$(az storage container generate-sas --account-name $stor_name -n test --https-only --permission dlrw --expiry $end -o tsv) && echo $sas
-
+# install azcopy
+echo -e "\e[1;36mInstalling AZCopy on $onprem1_vnet_name-gw gateway vm...\e[0m"
+az vm run-command invoke -g $rg -n $onprem1_vnet_name-gw --command-id RunShellScript --scripts "mkdir -p /tmp/azcopy && cd /tmp/azcopy && wget -O azcopy_v10.tar.gz https://aka.ms/downloadazcopy-v10-linux && tar -xf azcopy_v10.tar.gz --strip-components=1 && cp /tmp/azcopy/azcopy /usr/bin" --query value[0].message -o tsv
 
 # test file
 echo -e "\e[1;36mUploading test.txt to the test container in storage account ($stor_name)...\e[0m"
 testfile=~/test.txt
 cat <<EOF > $testfile
-This is just a test file
+This is just a test file stored on a storage account with VNet Service Endpoint enabled.
 EOF
 # upload test file to blob container
 az storage blob upload --account-name $stor_name --container-name test --account-key $storkey --auth-mode key -n test.txt -f $testfile
 
-# try to download the file from onprem using this command
-fileurl=${blobep}test/test.txt && echo $file
-echo you can now run the following command on gw and onprem vm: azcopy cp \"$fileurl?${sas}\" \"test.txt\"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "/tmp/azcopy/azcopy cp \"$file?${sas}\" \"test.txt\""
-
-# enable service endpoint on storage account
-az storage account network-rule list -g $rg --account-name $stor_name --query virtualNetworkRules
 # enable service endpoint on hub1 vm subnet for storage
 echo -e "\e[1;36mEnabling Service Endpoint for Microsoft.Storage.Global on $hub1_vm_subnet_name subnet in $hub1_vnet_name vnet...\e[0m"
 az network vnet subnet update -g $rg -n $hub1_vm_subnet_name --vnet-name $hub1_vnet_name --service-endpoints "Microsoft.Storage.Global" -o none
@@ -429,25 +394,29 @@ az network vnet subnet update -g $rg -n GatewaySubnet --vnet-name $hub1_vnet_nam
 
 # add a network rule for virtual network and subnet
 echo -e "\e[1;36mEnabling Service Endpoint on storage account ($stor_name) for $hub1_vm_subnet_name subnet in $hub1_vnet_name vnet...\e[0m"
-hub1_vm_sid=$(az network vnet subnet show -g $rg -n $hub1_vm_subnet_name --vnet-name $hub1_vnet_name --query id --output tsv)
-az storage account network-rule add -g $rg --account-name $stor_name --subnet $hub1_vm_sid -o none
+hub1_vm_sid=$(az network vnet subnet show -g $rg -n $hub1_vm_subnet_name --vnet-name $hub1_vnet_name --query id -o tsv | tr -d '\r')
+az storage account network-rule add -g $rg --account-name $stor_name --subnet $hub1_vm_sid --action Allow
 # gw network rule
 echo -e "\e[1;36mEnabling Service Endpoint on storage account ($stor_name) for GatewaySubnet in $hub1_vnet_name vnet...\e[0m"
-hub1_gw_sid=$(az network vnet subnet show -g $rg -n GatewaySubnet --vnet-name $hub1_vnet_name --query id --output tsv)
+hub1_gw_sid=$(az network vnet subnet show -g $rg -n GatewaySubnet --vnet-name $hub1_vnet_name --query id -o tsv | tr -d '\r')
 az storage account network-rule add -g $rg --account-name $stor_name --subnet $hub1_gw_sid -o none
 
-echo -e "\e[1;33mOn Azure Portal go to storage account ($stor_name)-->Networking and set Public network access to Enabled from selected virtual networks and then hit save...\e[0m"
-echo -e "\e[1;33mOn hub1 vm, you should still be able to run the azcopy command normally, but you won't be able to run the azcopy on onprem1-gw and onprem1 vms...\e[0m"
-echo -e "\e[1;33mYou should get on onprem1-gw and onprem1 vms the following error: RESPONSE 403: 403 This request is not authorized to perform this operation.\e[0m"
+# allow traffic only from hub1 virtual networks
+echo -e "\e[1;36mAllow traffic only from $hub1_vnet_name virtual networks on storage account...\e[0m"
+az storage account update -g $rg -n $stor_name --default-action Deny -o none
 
 # sending the traffic to the storage account through the onprem1-gw
 echo -e "\e[1;36mUpdating the $onprem1_vnet_name route table to send the traffic to the storage account IP address ($blob_ip) through onprem1-gw...\e[0m"
 az network route-table route create --address-prefix $blob_ip/32 -n to-storage -g $rg --next-hop-type VirtualAppliance --route-table-name $onprem1_vnet_name --next-hop-ip-address $onprem1_gw_private_ip -o none
 
-# add a static route to the storage account through the ipsec xfrm interface
-echo -e "\e[1;36mAdding a static route on onprem1-gw route the traffic to the storage account through ipsec0 xfrm interface (through S2S tunnel)...\e[0m"
-ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "sudo ip route add $blob_ip/32 dev ipsec0"
-echo -e "\e[1;33mNow you should be able to run the azcopy command normally on onprem1-gw and onprem1 vms...\e[0m"
+# try to download the file from onprem using this command
+fileurl=${blobep}test/test.txt && echo $fileurl
+echo -e "\e[1;36mDownloading a file from storage account via S2S VPN tunnel through the Service Endpoint enabled on the GW...\e[0m"
+ssh -n -o BatchMode=yes -o StrictHostKeyChecking=no $onprem1_gw_pubip "azcopy cp \"$fileurl?${sas}\" \"test.txt\""
+
+# these two commands are used to make sure traffic to the storage account is going through the VPN tunnel on FRR 
+# ip route $blob_ip/32 $onprem1_gw_vti0
+# ip route $blob_ip/32 $onprem1_gw_vti1
 
 # For P2S VPN connections, you can use this command to advertise the route to the storage account through VPN tunnel
 # az network vnet-gateway update -g $rg -n $hub1_vnet_name-gw --custom-routes "$blob_ip/32"
