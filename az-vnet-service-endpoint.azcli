@@ -385,6 +385,9 @@ EOF
 # upload test file to blob container
 az storage blob upload --account-name $stor_name --container-name test --account-key $storkey --auth-mode key -n test.txt -f $testfile
 
+# clean up test file
+rm $testfile
+
 # enable service endpoint on hub1 vm subnet for storage
 echo -e "\e[1;36mEnabling Service Endpoint for Microsoft.Storage.Global on $hub1_vm_subnet_name subnet in $hub1_vnet_name vnet...\e[0m"
 az network vnet subnet update -g $rg -n $hub1_vm_subnet_name --vnet-name $hub1_vnet_name --service-endpoints "Microsoft.Storage.Global" -o none
